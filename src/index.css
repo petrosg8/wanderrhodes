@@ -1,0 +1,134 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 40% 5%; /* Dark Navy */
+    --foreground: 0 0% 98%; /* Almost white */
+
+    --card: 220 30% 10%;
+    --card-foreground: 0 0% 98%;
+ 
+    --popover: 220 30% 10%;
+    --popover-foreground: 0 0% 98%;
+ 
+    --primary: 45 100% 50%; /* Gold */
+    --primary-foreground: 220 40% 5%;
+ 
+    --secondary: 210 90% 50%; /* Blue */
+    --secondary-foreground: 0 0% 98%;
+ 
+    --muted: 220 20% 20%;
+    --muted-foreground: 0 0% 63.9%;
+ 
+    --accent: 220 20% 20%;
+    --accent-foreground: 0 0% 98%;
+ 
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 220 20% 30%;
+    --input: 220 20% 30%;
+    --ring: 45 100% 50%; /* Gold for focus rings */
+ 
+    --radius: 0.75rem;
+
+    /* Custom colors for Wander Rhodes */
+    --wr-gold: 45 100% 60%; /* Brighter gold for text */
+    --wr-blue: 210 100% 65%; /* Brighter blue for text */
+    --wr-dark-button: 220 30% 15%;
+    --wr-neon-gold: 40 100% 55%; /* Neon gold for glow */
+    --wr-sunset-start: 25 100% 60%; /* Orange for sunset */
+    --wr-sunset-end: 35 90% 40%; /* Dark Amber for sunset */
+  }
+
+  .dark {
+    --background: 220 40% 5%;
+    --foreground: 0 0% 98%;
+    --card: 220 30% 10%;
+    --card-foreground: 0 0% 98%;
+    --popover: 220 30% 10%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 45 100% 50%;
+    --primary-foreground: 220 40% 5%;
+    --secondary: 210 90% 50%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 220 20% 20%;
+    --muted-foreground: 0 0% 63.9%;
+    --accent: 220 20% 20%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 20% 30%;
+    --input: 220 20% 30%;
+    --ring: 45 100% 50%;
+  }
+}
+ 
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    font-family: 'Poppins', sans-serif; /* Example font, ensure it's loaded */
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-semibold;
+  }
+}
+
+/* Custom scrollbar for a more modern look */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: hsl(var(--muted) / 0.3);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--primary) / 0.5);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--primary));
+}
+
+/* Custom glowing button effect */
+.glowing-button {
+  @apply shadow-[0_0_10px_hsl(var(--wr-neon-gold)),_0_0_20px_hsl(var(--wr-neon-gold)),_0_0_30px_hsl(var(--wr-neon-gold)),_0_0_40px_hsl(var(--wr-neon-gold))];
+  animation: pulsate-glow 2s infinite alternate;
+}
+
+@keyframes pulsate-glow {
+  0% {
+    box-shadow: 0 0 5px hsl(var(--wr-neon-gold)), 0 0 10px hsl(var(--wr-neon-gold)), 0 0 15px hsl(var(--wr-neon-gold)), 0 0 20px hsl(var(--wr-neon-gold));
+  }
+  100% {
+    box-shadow: 0 0 10px hsl(var(--wr-neon-gold)), 0 0 20px hsl(var(--wr-neon-gold)), 0 0 30px hsl(var(--wr-neon-gold)), 0 0 40px hsl(var(--wr-neon-gold));
+  }
+}
+
+.neon-gold-outline {
+  box-shadow: 0 0 3px hsl(var(--wr-neon-gold)), 0 0 5px hsl(var(--wr-neon-gold)), inset 0 0 2px hsl(var(--wr-neon-gold));
+}
+
+.neon-orange-outline {
+  box-shadow: 0 0 3px hsl(var(--wr-sunset-start)), 0 0 5px hsl(var(--wr-sunset-start)), inset 0 0 2px hsl(var(--wr-sunset-start));
+}
+.glowing-button-orange {
+  @apply shadow-[0_0_10px_hsl(var(--wr-sunset-start)),_0_0_20px_hsl(var(--wr-sunset-start)),_0_0_30px_hsl(var(--wr-sunset-start)),_0_0_40px_hsl(var(--wr-sunset-start))];
+  animation: pulsate-glow-orange 2s infinite alternate;
+}
+
+@keyframes pulsate-glow-orange {
+  0% {
+    box-shadow: 0 0 5px hsl(var(--wr-sunset-start)), 0 0 10px hsl(var(--wr-sunset-start)), 0 0 15px hsl(var(--wr-sunset-start)), 0 0 20px hsl(var(--wr-sunset-start));
+  }
+  100% {
+    box-shadow: 0 0 10px hsl(var(--wr-sunset-start)), 0 0 20px hsl(var(--wr-sunset-start)), 0 0 30px hsl(var(--wr-sunset-start)), 0 0 40px hsl(var(--wr-sunset-start));
+  }
+}

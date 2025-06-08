@@ -1,10 +1,12 @@
 import OpenAI from 'openai';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 
 const execFileAsync = promisify(execFile);
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Shared handler logic for both serverless and local Express usage
 export default async function chatHandler(req, res) {
   if (req.method && req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -23,11 +25,12 @@ export default async function chatHandler(req, res) {
   let context = '';
   try {
     const { stdout } = await execFileAsync('python3', [
-      'rag_retrieve.py',
+      join(__dirname, 'rag_retrieve.py'),
       prompt,
       '3'
     ]);
     const docs = JSON.parse(stdout);
+    console.log('🔍 Retrieved docs:', docs);
     context = docs.map(d => d.text).join('\n---\n');
   } catch (err) {
     console.error('Retrieval error:', err);
@@ -49,6 +52,9 @@ If off-topic, reply: “I’m sorry, I can only provide information about Rhodes
     ...history,
     { role: 'user', content: prompt }
   ];
+
+  // ── DEBUG: print the assembled messages array before sending to OpenAI ──
+  console.log('🔶 OpenAI prompt messages:', JSON.stringify(messages, null, 2));
 
   try {
     const completion = await openai.chat.completions.create({

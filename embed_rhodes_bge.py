@@ -1,74 +1,88 @@
 #!/usr/bin/env python3
 """
 Embed rhodes_knowledge_base_clean.xml with OpenAI text-embedding-3-small
-and store in a local Qdrant vector DB.
+and store in a local on-disk Qdrant vector DB, tagging each chunk with
+a simple 'category' (e.g. restaurant, beach, other).
 """
 
-import itertools, json, os, uuid, time
+import os
+import itertools
+import json
+import uuid
+from dotenv import load_dotenv
 from lxml import etree
 from tqdm import tqdm
-from dotenv import load_dotenv
+import tiktoken
 
-load_dotenv()                                   # picks up OPENAI_API_KEY
+# Load API key
+load_dotenv()
 
-# ---------- config ----------
-XML_FILE   = "rhodes_knowledge_base_clean.xml"
-BATCH_TOKS = 2048            # OpenAI max per request
-MIN_CHARS  = 200
-COLLECTION = "rhodes_rag"
+# ---------- Config ----------
+XML_FILE     = "rhodes_knowledge_base_clean.xml"
+BATCH_TOKENS = 2048
+MIN_CHARS    = 200
+COLLECTION   = os.getenv("RAG_COLLECTION", "rhodes_rag")
+DB_PATH      = os.getenv("RAG_DB_PATH", "rhodes_qdrant")
+EMBED_MODEL  = os.getenv("RAG_EMBED_MODEL", "text-embedding-3-small")
 # ----------------------------
 
-# --- OpenAI embedding wrapper ---
 from langchain_openai import OpenAIEmbeddings
-emb = OpenAIEmbeddings(model="text-embedding-3-small")
-
 from qdrant_client import QdrantClient, models as qdrant
 
-db = QdrantClient(path="rhodes_qdrant")
+# Instantiate embedder & DB client
+emb    = OpenAIEmbeddings(model=EMBED_MODEL)
+client = QdrantClient(path=DB_PATH)
 
-# --- NEW: make the collection once ---
-VECTOR_DIM = len(emb.embed_query("ping"))        # 1536 for text-embedding-3-small
-db.recreate_collection(
-    collection_name=COLLECTION,
-    vectors_config=qdrant.VectorParams(
-        size=VECTOR_DIM,
-        distance=qdrant.Distance.COSINE
-    ),
-)
-# --------------------------------------
+# Ensure collection exists (create if missing)
+existing = [c.name for c in client.get_collections().collections]
+dim      = len(emb.embed_query("ping"))
+if COLLECTION not in existing:
+    client.create_collection(
+        collection_name=COLLECTION,
+        vectors_config=qdrant.VectorParams(size=dim, distance=qdrant.Distance.COSINE),
+    )
 
-# --- simple tokenizer for size check (tiktoken) ---
-import tiktoken
-enc = tiktoken.encoding_for_model("text-embedding-3-small")
+# Tokenizer for batching
+enc = tiktoken.encoding_for_model(EMBED_MODEL)
 
 def iter_chunks():
-    """Yield (text, meta) tuples ≤~600 tokens each."""
     for _, sect in etree.iterparse(XML_FILE, events=("end",), tag="section"):
-        txt = (sect.text or "").replace("Quick view Bookmark", "").strip()
-        if len(txt) < MIN_CHARS:
-            sect.clear();  continue
+        text = (sect.text or "").replace("Quick view Bookmark", "").strip()
+        if len(text) < MIN_CHARS:
+            sect.clear()
+            continue
+
         parent = sect.getparent()
+        url    = parent.get("source", "")
+        # Heuristic category tagging
+        if "/listing/" in url:
+            category = "restaurant"
+        elif "/beaches/" in url:
+            category = "beach"
+        else:
+            category = "other"
+
         meta = {
-            "url":     parent.get("source"),
-            "title":   parent.findtext("title") or "",
-            "section": sect.get("name") or "",
-            "doc_id":  parent.get("id"),
+            "url":      url,
+            "title":    parent.findtext("title") or "",
+            "section":  sect.get("name") or "",
+            "doc_id":   parent.get("id") or "",
+            "category": category
         }
-        # naive sentence split so we rarely exceed 600 tokens
-        for para in txt.split("\n\n"):
-            if len(enc.encode(para)) > 600:
-                # break long para into 200-token windows
-                toks = enc.encode(para)
-                for i in range(0, len(toks), 600):
-                    yield enc.decode(toks[i:i+600]), meta
+
+        for para in text.split("\n\n"):
+            toks = enc.encode(para)
+            if len(toks) <= 600:
+                yield para, meta
             else:
-                yield para.strip(), meta
+                for i in range(0, len(toks), 600):
+                    yield enc.decode(toks[i : i + 600]), meta
+
         sect.clear()
 
-def batcher(iterator, max_tokens=BATCH_TOKS):
-    """Group texts so total token count ≤ max_tokens."""
+def batcher(it, max_tokens=BATCH_TOKENS):
     batch, tok_count = [], 0
-    for text, meta in iterator:
+    for text, meta in it:
         n = len(enc.encode(text))
         if tok_count + n > max_tokens and batch:
             yield batch
@@ -81,8 +95,8 @@ def batcher(iterator, max_tokens=BATCH_TOKS):
 print("Embedding via OpenAI …")
 for batch in tqdm(batcher(iter_chunks())):
     texts, metas = zip(*batch)
-    vectors = emb.embed_documents(list(texts))   # remote call
-    points = [
+    vectors      = emb.embed_documents(list(texts))
+    points       = [
         qdrant.PointStruct(
             id=str(uuid.uuid4()),
             vector=v,
@@ -90,7 +104,7 @@ for batch in tqdm(batcher(iter_chunks())):
         )
         for v, m, t in zip(vectors, metas, texts)
     ]
-    db.upsert(collection_name=COLLECTION, points=points)
+    client.upsert(collection_name=COLLECTION, points=points)
 
-count = db.count(collection_name=COLLECTION).count
-print(f"✅  All done — {count} chunks embedded and stored.")
+count = client.count(COLLECTION).count
+print(f"✅ All done — {count} chunks embedded and stored.")

@@ -23,7 +23,7 @@ export default async function chatHandler(req, res) {
   let context = '';
   try {
     const { stdout } = await execFileAsync('python3', [
-      './backend/rag_retrieve.py',
+      'rag_retrieve.py',
       prompt,
       '3'
     ]);

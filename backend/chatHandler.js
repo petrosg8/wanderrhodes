@@ -1,4 +1,8 @@
 import OpenAI from 'openai';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 
 // Shared handler logic for both serverless and local Express usage
 export default async function chatHandler(req, res) {
@@ -15,6 +19,20 @@ export default async function chatHandler(req, res) {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const { history = [], prompt } = req.body;
 
+  // Retrieve relevant context from the embedded knowledge base
+  let context = '';
+  try {
+    const { stdout } = await execFileAsync('python3', [
+      './backend/rag_retrieve.py',
+      prompt,
+      '3'
+    ]);
+    const docs = JSON.parse(stdout);
+    context = docs.map(d => d.text).join('\n---\n');
+  } catch (err) {
+    console.error('Retrieval error:', err);
+  }
+
   const systemPrompt = {
     role: 'system',
     content: `
@@ -25,7 +43,12 @@ If off-topic, reply: “I’m sorry, I can only provide information about Rhodes
     `.trim()
   };
 
-  const messages = [systemPrompt, ...history, { role: 'user', content: prompt }];
+  const messages = [
+    systemPrompt,
+    { role: 'system', content: `Context:\n${context}` },
+    ...history,
+    { role: 'user', content: prompt }
+  ];
 
   try {
     const completion = await openai.chat.completions.create({

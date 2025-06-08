@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "start-api": "node server.js"
+    "start-api": "node backend/server.js"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.0.5",

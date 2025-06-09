@@ -10,6 +10,7 @@
     "start-api": "node backend/server.js"
   },
   "dependencies": {
+    "@googlemaps/google-maps-services-js": "^3.4.1",
     "@radix-ui/react-alert-dialog": "^1.0.5",
     "@radix-ui/react-avatar": "^1.0.3",
     "@radix-ui/react-checkbox": "^1.0.4",

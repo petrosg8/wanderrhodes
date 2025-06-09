@@ -1,5 +1,5 @@
 .env
 .vercel
 node_modules/
-
+google_api_key.txt
 

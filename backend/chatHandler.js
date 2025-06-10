@@ -129,6 +129,9 @@ export default async function chatHandler(req, res) {
   if (message.function_call) {
     const { name, arguments: argsJson } = message.function_call;
     const args = JSON.parse(argsJson);
+
+    console.log(`🔧 Invoking tool ${name} with args:`, args);
+
     let toolResult;
 
     if (name === 'getNearbyPlaces') {
@@ -136,6 +139,8 @@ export default async function chatHandler(req, res) {
     } else if (name === 'getTravelTime') {
       toolResult = await getTravelTime(args);
     }
+
+    console.log(`🛠️ Tool ${name} result:`, toolResult);
 
     messages.push(message);
     messages.push({

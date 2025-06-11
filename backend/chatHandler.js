@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export default async function chatHandler(req, res) {
+  // Only POST
   if (req.method && req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).end('Method Not Allowed');
@@ -26,50 +27,33 @@ export default async function chatHandler(req, res) {
   let context = '';
   try {
     const { stdout } = await execFileAsync('python3', [
-      join(__dirname, 'rag_retrieve.py'),
-      prompt,
-      '3'
+      join(__dirname, 'rag_retrieve.py'), prompt, '3'
     ]);
     const docs = JSON.parse(stdout);
-    console.log('🔍 Retrieved docs:', docs);
     context = docs.map(d => d.text).join('\n---\n');
+    console.log('🔍 Retrieved docs:', docs);
   } catch (err) {
     console.error('Retrieval error:', err);
   }
 
-  // 2) Build base messages
+  // 2) Prepare system prompt and initial messages
   const systemPrompt = {
     role: 'system',
     content: `
-    You are RhodesGuide, an expert local concierge for Rhodes Island.
-    You know Rhodes inside out—geography, history, beaches, villages, hotels, restaurants, transport, culture, events and hidden gems.
-    You can plan multi-day itineraries that respect opening hours, distances, and traveler preferences.
-    
-    You have two tools available:
-    1. getNearbyPlaces(lat: number, lng: number, radius?: integer, type?: string)
-       - Returns an array of places (name, address, rating, plus_code, place_id) near the given coordinates.
-    2. getTravelTime(origin: string, destination: string, mode?: string)
-       - Returns {distance_m, duration_s} between two addresses or place_ids.
-    
-    Whenever you need live location data (e.g. “What restaurants are within 1 km of Faliraki Beach?”), call getNearbyPlaces.  
-    Whenever you need to compute travel durations or distances, call getTravelTime.
-    
-    Always ground your answers in the CONTEXT provided. If the CONTEXT doesn’t cover something, say “I don’t have that info.”  
-    When planning, think step by step and show your chain of thought in the reasoning section.
-    
-    **RESPONSE FORMAT (must follow exactly):**
-    1. **Clarifying questions** (or “None needed”)
-    2. **Reasoning steps** (numbered)
-    3. **Answer or itinerary**, referencing tool calls like [Tool: getNearbyPlaces] or [Tool: getTravelTime]
-    4. **Pro tip**
-    
-    System will supply:
-    - A “Context:” chunk from static knowledge base (if any)
-    - User's final prompt
-    
-    User will respond with travel questions or general Rhodes queries.  
-    Now, await the user's question.  
-    
+You are RhodesGuide, an expert local concierge and travel planner for Rhodes Island.
+First, gather user details via clarifying questions (dates, location, preferences).
+Then, plan a personalized itinerary respecting opening hours and travel times.
+You have two tools:
+- getNearbyPlaces(lat, lng, radius, type)
+- getTravelTime(origin, destination, mode)
+
+Workflow:
+1. Ask clarifying questions until user details are complete.
+2. Think step-by-step; when live data is needed, emit a function_call.
+3. Execute the tool, append results, and continue the loop.
+4. Once ready, produce a final JSON answer.
+
+Begin by asking any missing details.
     `.trim()
   };
 
@@ -80,83 +64,71 @@ export default async function chatHandler(req, res) {
     { role: 'user', content: prompt }
   ];
 
-  console.log('🔶 OpenAI prompt messages:', JSON.stringify(messages, null, 2));
+  console.log('🔶 Prompt messages:', JSON.stringify(messages, null, 2));
 
-  // 3) Define your tools for Function Calling
+  // 3) Define function schemas
   const functions = [
     {
       name: 'getNearbyPlaces',
-      description: 'Find places near a lat/lng on Rhodes (e.g. restaurants, hotels)',
-      parameters: {
-        type: 'object',
-        properties: {
-          lat:      { type: 'number', description: 'Latitude' },
-          lng:      { type: 'number', description: 'Longitude' },
-          radius:   { type: 'integer', description: 'Search radius in meters' },
-          type:     { type: 'string',  description: 'Place type, e.g. restaurant, museum' }
-        },
-        required: ['lat', 'lng']
-      }
+      description: 'Find nearby places by coordinates',
+      parameters: { type: 'object', properties: { lat:{type:'number'}, lng:{type:'number'}, radius:{type:'integer'}, type:{type:'string'} }, required:['lat','lng'] }
     },
     {
       name: 'getTravelTime',
-      description: 'Compute travel time between two locations',
-      parameters: {
-        type: 'object',
-        properties: {
-          origin:      { type: 'string', description: 'Address or place_id' },
-          destination: { type: 'string', description: 'Address or place_id' },
-          mode:        { type: 'string', description: 'driving, walking, transit, bicycling' }
-        },
-        required: ['origin', 'destination']
-      }
+      description: 'Get travel time between locations',
+      parameters: { type:'object', properties:{ origin:{type:'string'}, destination:{type:'string'}, mode:{type:'string'} }, required:['origin','destination'] }
     }
   ];
 
-  // 4) First LLM call: let it decide if it needs a tool
-  let response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',    // or gpt-3.5-turbo-0613
-    messages,
-    functions,
-    function_call: 'auto',
-    temperature: 0.2,
-    max_tokens: 500
-  });
+  let finalReply = null;
+  let iteration = 0;
 
-  const message = response.choices[0].message;
-
-  // 5) If it wants a tool, invoke and then feed back
-  if (message.function_call) {
-    const { name, arguments: argsJson } = message.function_call;
-    const args = JSON.parse(argsJson);
-
-    console.log(`🔧 Invoking tool ${name} with args:`, args);
-
-    let toolResult;
-
-    if (name === 'getNearbyPlaces') {
-      toolResult = await getNearbyPlaces(args);
-    } else if (name === 'getTravelTime') {
-      toolResult = await getTravelTime(args);
-    }
-
-    console.log(`🛠️ Tool ${name} result:`, toolResult);
-
-    messages.push(message);
-    messages.push({
-      role: 'function',
-      name,
-      content: JSON.stringify(toolResult)
-    });
-
-    response = await openai.chat.completions.create({
+  // 4) Loop for function calls and reasoning
+  while (iteration < 10) {
+    const response = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages,
+      functions,
+      function_call: 'auto',
       temperature: 0.2,
-      max_tokens: 500
+      max_tokens: 700
     });
+    const msg = response.choices[0].message;
+
+    // If requesting a tool, invoke and loop
+    if (msg.function_call) {
+      const { name, arguments: argsJson } = msg.function_call;
+      const args = JSON.parse(argsJson);
+      console.log(`🔧 Calling tool ${name}`, args);
+      let toolResult = [];
+      if (name === 'getNearbyPlaces') toolResult = await getNearbyPlaces(args);
+      if (name === 'getTravelTime')  toolResult = await getTravelTime(args);
+      console.log(`🛠️ Tool ${name} returned`, toolResult);
+      messages.push(msg);
+      messages.push({ role: 'function', name, content: JSON.stringify(toolResult) });
+      iteration += 1;
+      continue;
+    }
+
+    // Non-function reply: treat as response
+    finalReply = msg.content.trim();
+    break;
   }
 
-  const reply = response.choices[0].message.content.trim();
-  return res.status(200).json({ reply });
+  // 5) Determine if finalReply is JSON (final answer) or plain text (clarification)
+  let output;
+  if (finalReply && finalReply.startsWith('{')) {
+    try {
+      output = JSON.parse(finalReply);
+    } catch (e) {
+      console.error('JSON parse error:', e);
+      output = { final_answer: finalReply };
+    }
+  } else {
+    // Clarifying question or plain text
+    output = { reply: finalReply };
+  }
+
+  // 6) Return JSON to client
+  return res.status(200).json(output);
 }

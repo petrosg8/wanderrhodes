@@ -2,6 +2,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import Logo from "../components/ui/Logo";
+import LocationCard from "../components/LocationCard";
 
 const SUGGESTIONS = [
   "Where should I eat tonight in Faliraki?",
@@ -13,9 +14,54 @@ function formatTime(date) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+const parseAiResponse = (reply, structuredData, blur) => {
+  const newMessages = [];
+  const locations = structuredData?.locations || [];
+
+  if (!locations.length) {
+    if (reply.trim()) {
+      newMessages.push({
+        sender: 'ai',
+        type: 'text',
+        message: reply.trim(),
+        time: new Date(),
+        blur: blur,
+      });
+    }
+    return newMessages;
+  }
+
+  const textParts = reply.split('|||LOCATION|||');
+
+  textParts.forEach((text, i) => {
+    const trimmedText = text.trim();
+    if (trimmedText) {
+      newMessages.push({
+        sender: 'ai',
+        type: 'text',
+        message: trimmedText,
+        time: new Date(),
+        blur: blur,
+      });
+    }
+    if (locations[i]) {
+      newMessages.push({
+        sender: 'ai',
+        type: 'location',
+        locationData: locations[i],
+        time: new Date(),
+        blur: blur,
+      });
+    }
+  });
+
+  return newMessages;
+};
+
 export default function ChatPage() {
   const navigate = useNavigate();
   const chatEndRef = useRef(null);
+  const inputRef = useRef(null);
 
   const FREE_LIMIT = 5;
   const [replyCount, setReplyCount] = useState(0);
@@ -24,8 +70,9 @@ export default function ChatPage() {
   const [messages, setMessages] = useState([
     {
       sender: "ai",
+      type: "text",
       message:
-        "Hi! I’m your local Rhodes AI assistant. Ask me anything—food, sights, or secrets!",
+        "Hi! I'm your local Rhodes AI assistant. Ask me anything—food, sights, or secrets!",
       time: new Date(),
       blur: false
     }
@@ -40,6 +87,33 @@ export default function ChatPage() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e) => {
+      const target = e.target;
+      
+      // Don't focus if the user is already in an input, textarea, or contentEditable element.
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return;
+      }
+
+      // Don't focus if a modifier key is pressed.
+      if (e.ctrlKey || e.metaKey || e.altKey) {
+        return;
+      }
+
+      // Focus on character key presses, but ignore special keys like Enter, Tab, etc.
+      if (e.key.length === 1) {
+        inputRef.current?.focus();
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+
+    return () => {
+      window.removeEventListener('keydown', handleGlobalKeyDown);
+    };
+  }, []);
 
   const sanitize = (str) => str.replace(/<\/?[^>]+(>|$)/g, "");
 
@@ -62,7 +136,7 @@ export default function ChatPage() {
 
     setMessages((m) => [
       ...m,
-      { sender: "user", message: text, time: new Date(), blur: false }
+      { sender: "user", type: "text", message: text, time: new Date(), blur: false }
     ]);
 
     try {
@@ -78,17 +152,25 @@ export default function ChatPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ history, prompt: text })
       });
-      const { reply = "(no reply)" } = await res.json();
+      const { reply = "(no reply)", structuredData = null } = await res.json();
 
-      setMessages((m) => [
-        ...m,
-        {
-          sender: "ai",
-          message: reply,
-          time: new Date(),
-          blur: blurNext
-        }
-      ]);
+      const newAiMessages = parseAiResponse(reply, structuredData, blurNext);
+
+      if (newAiMessages.length > 0) {
+        setMessages((m) => [...m, ...newAiMessages]);
+      } else {
+        setMessages((m) => [
+          ...m,
+          {
+            sender: "ai",
+            type: "text",
+            message: reply || "Sorry, I had trouble generating a response.",
+            time: new Date(),
+            blur: blurNext
+          }
+        ]);
+      }
+
       if (blurNext) setBlurNext(false);
       setReplyCount((c) => c + 1);
     } catch {
@@ -96,6 +178,7 @@ export default function ChatPage() {
         ...m,
         {
           sender: "ai",
+          type: "text",
           message: "Sorry, something went wrong.",
           time: new Date(),
           blur: false
@@ -145,15 +228,35 @@ export default function ChatPage() {
         className="flex-1 overflow-y-auto px-4 py-2 space-y-2"
         style={{ WebkitOverflowScrolling: "touch", overscrollBehavior: "contain" }}
       >
-        {messages.map((m, i) => (
-          <ChatBubble
-            key={i}
-            sender={m.sender}
-            message={m.message}
-            time={m.time}
-            blur={m.blur}
-          />
-        ))}
+        {messages.map((m, i) => {
+          if (m.type === 'location') {
+            return (
+              <div key={i} className={`relative flex justify-start my-1 ${m.blur ? 'blur-sm' : ''}`}>
+                <div className="max-w-[75%]">
+                  <LocationCard location={m.locationData} />
+                </div>
+                {m.blur && (
+                  <button
+                    onClick={() => navigate("/paywall")}
+                    className="absolute inset-0 w-full h-full bg-transparent flex items-center justify-center text-white font-bold text-lg z-10"
+                  >
+                    Unlock Full Response
+                  </button>
+                )}
+              </div>
+            );
+          }
+          
+          return (
+            <ChatBubble
+              key={i}
+              sender={m.sender}
+              message={m.message}
+              time={m.time}
+              blur={m.blur}
+            />
+          );
+        })}
         {isTyping && <TypingBubble />}
         <div ref={chatEndRef} />
       </div>
@@ -191,6 +294,7 @@ export default function ChatPage() {
           className="flex items-center gap-2 mb-safe"
         >
           <input
+            ref={inputRef}
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -237,10 +341,10 @@ function ChatBubble({ sender, message, time, blur }) {
           fontWeight: 500,
           boxShadow: isUser
             ? "0 4px 12px rgba(0,0,0,0.15)"
-            : "0 2px 8px rgba(0,0,0,0.5)"
+            : "0 2px 8px rgba(0,0,0,0.5)",
         }}
       >
-        {message}
+        <p className="whitespace-pre-wrap">{message}</p>
         <div className="text-[0.7rem] text-[#888faa] text-right mt-1">
           {formatTime(time)}
         </div>
@@ -248,9 +352,9 @@ function ChatBubble({ sender, message, time, blur }) {
       {blur && !isUser && (
         <button
           onClick={() => navigate("/paywall")}
-          className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 text-white font-semibold rounded-lg"
+          className="absolute inset-0 w-full h-full bg-transparent flex items-center justify-center text-white font-bold text-lg z-10"
         >
-          Upgrade to continue
+          Unlock Full Response
         </button>
       )}
     </div>

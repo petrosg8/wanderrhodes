@@ -23,19 +23,24 @@ export async function getNearbyPlaces({ lat, lng, radius = 1000, type }) {
 }
 
 export async function getTravelTime({ origin, destination, mode = "driving" }) {
-  const res = await maps.directions({
-    params: {
-      key: process.env.GOOGLE_MAPS_API_KEY,
-      origin,
-      destination,
-      mode,
-    },
-    timeout: 5000,
-  });
-  const leg = res.data.routes?.[0]?.legs?.[0];
-  if (!leg) return null;
-  return {
-    distance_m: leg.distance.value,
-    duration_s: leg.duration.value
-  };
+  try {
+    const res = await maps.directions({
+      params: {
+        key: process.env.GOOGLE_MAPS_API_KEY,
+        origin,
+        destination,
+        mode,
+      },
+      timeout: 5000,
+    });
+    const leg = res.data.routes?.[0]?.legs?.[0];
+    if (!leg) return null;
+    return {
+      distance_m: leg.distance.value,
+      duration_s: leg.duration.value,
+    };
+  } catch (err) {
+    console.error("Directions API error:", err.response?.status || err.code, err.message);
+    return null;
+  }
 }

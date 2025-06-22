@@ -20,10 +20,12 @@ export default async function chatHandler(req, res) {
   }
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const { history = [], prompt } = req.body;
+  const { history = [], prompt, userLocation = null } = req.body;
 
-  // 1) Retrieve RAG context
+  // 1) Retrieve RAG context (disabled)
+  // NOTE: Temporarily disabling the knowledge-base retrieval while we refine the RAG pipeline.
   let context = '';
+  /*
   try {
     const { stdout } = await execFileAsync('python3', [
       join(__dirname, 'rag_retrieve.py'),
@@ -36,10 +38,11 @@ export default async function chatHandler(req, res) {
   } catch (err) {
     console.error('Retrieval error:', err);
   }
+  */
 
   // 2) Build system prompt
   const systemPrompt = `
-You are RhodesGuide, a passionate local expert and travel companion for Rhodes Island. Think of yourself as a friendly local friend who knows every hidden gem and secret spot on the island.
+You are WanderRhodes, a passionate local expert and travel companion for Rhodes Island. Think of yourself as a friendly local friend who knows every hidden gem and secret spot on the island.
 
 Your approach to travel planning should be thoughtful and personalized:
 
@@ -83,7 +86,11 @@ Your approach to travel planning should be thoughtful and personalized:
   "highlights": ["Key feature 1", "Key feature 2", "Key feature 3"],
   "tips": ["Local tip 1", "Local tip 2"],
   "bestTimeToVisit": "Recommended time of day or season",
-  "nearbyAttractions": ["Nearby point 1", "Nearby point 2"]
+  "nearbyAttractions": ["Nearby point 1", "Nearby point 2"],
+  "travel": {
+    "distanceMeters": "Number of meters from the PREVIOUS location (omit for the first location)",
+    "durationMinutes": "Estimated travel time in minutes from the PREVIOUS location"
+  }
 }
 
 IMPORTANT RULES FOR JSON:
@@ -95,7 +102,20 @@ IMPORTANT RULES FOR JSON:
 6. Do not include any text between JSON objects
 
 Example format:
-Here's a great spot to visit: {"name": "Example Place", "type": "Restaurant", ...} Another amazing location is: {"name": "Another Place", "type": "Beach", ...}
+Here's a great spot to visit: {"name": "Example Place", "type": "Restaurant", ...} Another amazing location is: {"name": "Another Place", "type": "Beach", ..., "travel": {"distanceMeters": 12000, "durationMinutes": 18}}
+
+TRAVEL GUIDELINES:
+• Before introducing a new location (except the first), CALL the getTravelTime tool with the previous and next location addresses to fetch accurate travel distance/time.
+• Insert the returned distance_m and duration_s (convert seconds to minutes, round) into the "travel" object in that next location's JSON.
+• Always prefer driving mode unless user specifies walking/cycling.
+• If the tool fails, approximate but note "estimated".
+• Never omit the travel object except for the first location.
+• Order the itinerary to minimize backtracking: each next stop should generally be geographically closer to the following one along the driving route.
+• If the user specifies a sub-region (e.g. "south part of Rhodes"), include ONLY locations whose coordinates lie in that region (south of Lindos ≈ latitude < 36.1). Skip anything outside.
+• The very first hop should start from the user's stated origin. If the origin is known (e.g. "start at Faliraki"), calculate travel time from that origin to the first location.
+• Provide at least 3–6 stops unless the user asks otherwise.
+
+${userLocation ? `User current coordinates: (${userLocation.lat}, ${userLocation.lng}). Treat this as their starting point unless they specify another origin.` : ""}
 
 Context:
 ${context}
@@ -140,6 +160,18 @@ Begin by gathering any missing details from the user, then plan a personalized i
     }
   ];
 
+  // Helper to ensure every message has a valid string content (OpenAI API rejects null/undefined)
+  const sanitizeMessages = (msgs) => msgs.map((m) => {
+    if (m.content === null || m.content === undefined) {
+      return { ...m, content: "" };
+    }
+    // If, for some reason, the content is not a string, coerce it into one
+    if (typeof m.content !== "string") {
+      return { ...m, content: JSON.stringify(m.content) };
+    }
+    return m;
+  });
+
   // 4) Main agent loop
   let messages = [
     { role: "system", content: systemPrompt },
@@ -150,8 +182,8 @@ Begin by gathering any missing details from the user, then plan a personalized i
   const MAX_ITERATIONS = 5;
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const completion = await openai.chat.completions.create({
-        model: "gpt-4",
-        messages: messages,
+        model: "gpt-4.1-mini",
+        messages: sanitizeMessages(messages),
         tools: tools,
         tool_choice: "auto",
     });
@@ -190,14 +222,16 @@ Begin by gathering any missing details from the user, then plan a personalized i
     const responseText = responseMessage.content || "";
     const { locations } = extractStructuredData(responseText);
 
-    if (locations.length > 0 || responseText.includes('?')) {
+    // Break only if the assistant has provided location data AND is not asking further questions.
+    if (locations.length > 0 && !responseText.includes('?')) {
       break;
     }
 
-    console.log("Potential 'wait' message detected. Re-prompting to continue...");
+    // If the assistant is still asking the user something (contains '?'), politely instruct it to proceed.
+    console.log("Assistant seems to be waiting for user input. Re-prompting to continue…");
     messages.push({
       role: 'user',
-      content: 'Please proceed and provide the full itinerary with all points of interest now. Do not ask me to wait, just provide the complete plan.'
+      content: 'Please proceed and provide the complete itinerary with all remaining points of interest now, including travel times. You have all the information you need.'
     });
   }
 
@@ -210,10 +244,66 @@ Begin by gathering any missing details from the user, then plan a personalized i
   console.log("Raw AI Response before parsing:\n---\n", response, "\n---");
   const { locations, cleanedText, metadata } = extractStructuredData(response);
   
+  // Augment with travel times/distances if they are missing
+  await addTravelTimes(locations, userLocation);
+
   return res.status(200).json({ 
     reply: cleanedText,
     structuredData: { locations, metadata }
   });
+}
+
+// Compute travel time & distance between consecutive locations when missing
+async function addTravelTimes(locations, userLocation) {
+  // Helper to build coordinate/address string
+  const locToString = (loc) =>
+    loc?.coordinates ? `${loc.coordinates.lat},${loc.coordinates.lng}` : loc?.address;
+
+  // Compute first leg from userLocation if available
+  if (userLocation && locations.length > 0) {
+    const first = locations[0];
+    if (!first.travel || !(first.travel.distanceMeters && first.travel.durationMinutes)) {
+      try {
+        const origin = `${userLocation.lat},${userLocation.lng}`;
+        const destination = locToString(first.location);
+        if (destination) {
+          const result = await getTravelTime({ origin, destination });
+          if (result) {
+            first.travel = {
+              distanceMeters: result.distance_m,
+              durationMinutes: Math.round(result.duration_s / 60)
+            };
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch first leg travel time:', e.message);
+      }
+    }
+  }
+
+  // Compute travel between consecutive stops
+  for (let i = 1; i < locations.length; i++) {
+    const prev = locations[i - 1];
+    const curr = locations[i];
+
+    if (curr.travel && curr.travel.distanceMeters && curr.travel.durationMinutes) continue;
+
+    try {
+      const origin = locToString(prev.location);
+      const destination = locToString(curr.location);
+      if (!origin || !destination) continue;
+
+      const result = await getTravelTime({ origin, destination });
+      if (result) {
+        curr.travel = {
+          distanceMeters: result.distance_m,
+          durationMinutes: Math.round(result.duration_s / 60)
+        };
+      }
+    } catch (e) {
+      console.error('Failed to fetch travel time:', e.message);
+    }
+  }
 }
 
 // Helper function to extract structured data from the response

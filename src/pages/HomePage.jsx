@@ -1,6 +1,7 @@
 import React from 'react';
 import Logo from '../components/ui/Logo';
 import { useNavigate } from 'react-router-dom';
+import { isPaid } from '@/utils/auth';
 
 function HomePage() {
   const navigate = useNavigate();
@@ -47,7 +48,7 @@ function HomePage() {
             })
           }
         >
-          🔍 Chat Now — It’s Free
+          🔍 Chat Now — It's Free
         </button>
         <button
           className="w-full py-4 text-base rounded-full border border-[#F4E1C1] text-white font-medium bg-white/20 backdrop-blur-sm hover:bg-white/30 transition shadow-sm"
@@ -55,6 +56,8 @@ function HomePage() {
         >
           📖 See How It Works
         </button>
+
+        {/* The My Travel Plans button is intentionally accessible only within the chat UI for paid users */}
       </div>
 
       {/* Feature Icons */}

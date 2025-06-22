@@ -1,8 +1,13 @@
 // src/pages/ChatPage.jsx
 import React, { useState, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import Logo from "../components/ui/Logo";
 import LocationCard from "../components/LocationCard";
+import { Copy, BookMarked } from "lucide-react";
+import { toast } from "@/components/ui/use-toast";
+import { Toaster } from "@/components/ui/toaster";
+import { isPaid } from "@/utils/auth";
+import { getSavedPlans } from '@/utils/plans';
 
 const SUGGESTIONS = [
   "Where should I eat tonight in Faliraki?",
@@ -64,27 +69,95 @@ export default function ChatPage() {
   const inputRef = useRef(null);
 
   const FREE_LIMIT = 5;
-  const [replyCount, setReplyCount] = useState(0);
-  const [blurNext, setBlurNext] = useState(false);
 
-  const [messages, setMessages] = useState([
-    {
-      sender: "ai",
-      type: "text",
-      message:
-        "Hi! I'm your local Rhodes AI assistant. Ask me anything—food, sights, or secrets!",
-      time: new Date(),
-      blur: false
+  const [searchParams] = useSearchParams();
+  const planId = searchParams.get('plan');
+
+  // Initialize replyCount based on how many AI responses already exist (useful when loading from a saved plan)
+  const initialMessages = (() => {
+    if (typeof window === 'undefined') return [];
+
+    if (planId) {
+      try {
+        const plans = getSavedPlans();
+        const plan = plans.find((p) => String(p.timestamp) === String(planId));
+        if (plan && plan.chatHistory) {
+          return plan.chatHistory.map((m) => ({ ...m, time: new Date(m.time) }));
+        }
+      } catch {}
     }
-  ]);
+
+    try {
+      const raw = localStorage.getItem('wr_chat_history');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return parsed.map((m) => ({ ...m, time: new Date(m.time) }));
+      }
+    } catch {}
+    return [
+      {
+        sender: 'ai',
+        type: 'text',
+        message: "Hi! I'm your local Rhodes AI assistant. Ask me anything—food, sights, or secrets!",
+        time: new Date(),
+        blur: false,
+      },
+    ];
+  })();
+
+  const [messages, setMessages] = useState(initialMessages);
+
+  const [replyCount, setReplyCount] = useState(() => {
+    const count = initialMessages.filter((m) => m.sender === 'ai').length;
+    return Math.max(0, count - 1); // exclude greeting if present
+  });
+
+  const [blurNext, setBlurNext] = useState(false);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [lastSent, setLastSent] = useState(0);
+  const [planConfig, setPlanConfig] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = localStorage.getItem('wr_plan_config');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [userLocation, setUserLocation] = useState(null);
+  const [locationDenied, setLocationDenied] = useState(false);
+  const [currentPlan, setCurrentPlan] = useState(null);
+  const [planSaved, setPlanSaved] = useState(false);
 
   const freeRemaining = Math.max(FREE_LIMIT - replyCount, 0);
 
   // auto-scroll
   useEffect(() => {
+    // Attempt to detect user's geolocation once
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setUserLocation({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          });
+        },
+        (err) => {
+          console.warn("Geolocation error:", err.message);
+          if (err.code === err.PERMISSION_DENIED) {
+            setLocationDenied(true);
+            toast({
+              title: "Location permission denied",
+              description: "We'll plan your trip starting from the island center. You can specify a different start point in chat.",
+              variant: "destructive",
+            });
+          }
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    }
+
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isTyping]);
 
@@ -150,7 +223,7 @@ export default function ChatPage() {
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ history, prompt: text })
+        body: JSON.stringify({ history, prompt: text, userLocation })
       });
       const { reply = "(no reply)", structuredData = null } = await res.json();
 
@@ -173,6 +246,16 @@ export default function ChatPage() {
 
       if (blurNext) setBlurNext(false);
       setReplyCount((c) => c + 1);
+
+      // If AI returned locations, store as currentPlan
+      if (structuredData?.locations?.length > 0) {
+        setCurrentPlan({
+          title: text.substring(0, 60),
+          locations: structuredData.locations,
+          timestamp: Date.now(),
+        });
+        setPlanSaved(false);
+      }
     } catch {
       setMessages((m) => [
         ...m,
@@ -189,6 +272,64 @@ export default function ChatPage() {
     }
   };
 
+  // Copies the full conversation (user & AI messages) to the clipboard
+  const handleCopyTranscript = () => {
+    const transcriptText = messages
+      .map((m) => {
+        if (m.type === "location") {
+          const name = m.locationData?.name || "Location";
+          return `${m.sender === "user" ? "You" : "Rhodes"} shared: ${name}`;
+        }
+        return `${m.sender === "user" ? "You" : "Rhodes"}: ${m.message}`;
+      })
+      .join("\n\n");
+
+    navigator.clipboard
+      .writeText(transcriptText)
+      .then(() => {
+        toast({ title: "Transcript copied to clipboard" });
+      })
+      .catch(() => {
+        toast({ title: "Failed to copy transcript", variant: "destructive" });
+      });
+  };
+
+  // Persist messages on change
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem('wr_chat_history', JSON.stringify(messages));
+    } catch {}
+  }, [messages]);
+
+  // If user hasn't configured the plan yet, show configuration overlay
+  if (!planConfig) {
+    return (
+      <div className="h-screen flex flex-col items-center justify-center bg-gradient-to-b from-[#1a1f3d] via-[#242b50] to-transparent p-6 text-[#F4E1C1] relative">
+        <Logo className="h-10 mb-6" />
+
+        <h2 className="text-2xl font-semibold mb-4">Plan preferences</h2>
+
+        <PlanConfigurator
+          onSubmit={(cfg) => {
+            setPlanConfig(cfg);
+            try {
+              localStorage.setItem('wr_plan_config', JSON.stringify(cfg));
+            } catch {}
+            // Compose a single-line instruction for the assistant
+            let intro = `Here are my preferences: pace: ${cfg.pace}, water activities: ${cfg.waterActivities}, transport: ${cfg.transport}, start time: ${cfg.startTime}.`;
+            if (cfg.extraDetails && cfg.extraDetails.trim()) {
+              intro += ` Additional details: ${cfg.extraDetails.trim()}.`;
+            }
+            intro += " Please tailor the plan accordingly.";
+            handleSend(intro); // automatically send
+          }}
+        />
+        <Toaster />
+      </div>
+    );
+  }
+
   return (
     <div
       className="h-screen overflow-hidden flex flex-col bg-gradient-to-b from-[#1a1f3d] via-[#242b50] to-transparent"
@@ -199,28 +340,44 @@ export default function ChatPage() {
       }}
     >
       {/* HEADER */}
-      <header className="sticky top-0 z-50 bg-[#1a1f3d] py-3 px-4 grid grid-cols-3 items-center">
-        {/* back */}
-        <button
-          onClick={() => navigate("/")}
-          className="justify-self-start w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center transition"
-        >
-          <svg width={20} height={20} viewBox="0 0 20 20" fill="none">
-            <path
-              d="M13.5 17L7.5 10L13.5 3"
-              stroke="#F4E1C1"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
-        {/* logo */}
-        <div className="justify-self-center">
-          <Logo className="h-8 whitespace-nowrap" />
+      <header className="sticky top-0 z-50 bg-[#1a1f3d] py-3 px-4 flex items-center justify-between">
+        {/* left group: back & logo */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => navigate("/")}
+            className="w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center transition"
+            title="Back"
+          >
+            <svg width={20} height={20} viewBox="0 0 20 20" fill="none">
+              <path
+                d="M13.5 17L7.5 10L13.5 3"
+                stroke="#F4E1C1"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          <Logo className="h-6 whitespace-nowrap" />
         </div>
-        {/* placeholder */}
-        <div className="w-8 h-8" />
+
+        {/* right buttons */}
+        <div className="flex gap-2 items-center">
+          <button
+            onClick={() => navigate('/plans')}
+            className="w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center transition"
+            title="My Plans"
+          >
+            <BookMarked size={18} color="#F4E1C1" />
+          </button>
+          <button
+            onClick={handleCopyTranscript}
+            className="w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center transition"
+            title="Copy transcript"
+          >
+            <Copy size={18} color="#F4E1C1" />
+          </button>
+        </div>
       </header>
 
       {/* CHAT */}
@@ -278,6 +435,34 @@ export default function ChatPage() {
           </div>
         )}
 
+        {/* save plan button */}
+        {currentPlan && !planSaved && (
+          <div className="flex justify-center mb-2">
+            <button
+              onClick={() => {
+                import('@/utils/plans').then(({ savePlan, canSaveAnotherPlan }) => {
+                  if (!canSaveAnotherPlan()) {
+                    navigate('/paywall');
+                    return;
+                  }
+                  const name = window.prompt('Name this travel plan:', currentPlan.title || 'My Rhodes Plan');
+                  if (name === null) return; // user cancelled
+                  const ok = savePlan({ ...currentPlan, title: name, chatHistory: messages });
+                  if (ok) {
+                    setPlanSaved(true);
+                    toast({ title: 'Plan saved!' });
+                  } else {
+                    navigate('/paywall');
+                  }
+                });
+              }}
+              className="px-4 py-1 rounded-full text-xs font-semibold bg-[#E8D5A4] text-[#242b50] hover:bg-[#CAB17B] transition"
+            >
+              Save this plan
+            </button>
+          </div>
+        )}
+
         {/* free-prompts pill */}
         <div className="flex justify-center mb-2">
           <div className="px-3 py-1 text-xs font-semibold rounded-full border border-[#F4E1C1] bg-white/10 text-[#F4E1C1] whitespace-nowrap">
@@ -317,6 +502,9 @@ export default function ChatPage() {
           </button>
         </form>
       </div>
+
+      {/* Toast notifications */}
+      <Toaster />
     </div>
   );
 }
@@ -372,6 +560,136 @@ function TypingBubble() {
           <div className="w-2 h-2 bg-[#E8D5A4] rounded-full animate-ping animation-delay-300" />
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------- PlanConfigurator component ----------------
+function PlanConfigurator({ onSubmit }) {
+  const [pace, setPace] = useState(null);
+  const [waterActivities, setWaterActivities] = useState(null);
+  const [transport, setTransport] = useState(null);
+  const [startTime, setStartTime] = useState(null);
+  const [extraDetails, setExtraDetails] = useState("");
+
+  const isReady = pace && waterActivities !== null && transport && startTime;
+
+  const buttonBase =
+    "px-4 py-2 rounded-full border border-[#F4E1C120] backdrop-blur-md text-sm font-medium focus:outline-none";
+
+  return (
+    <div className="w-full max-w-md space-y-6">
+      {/* Pace */}
+      <div>
+        <h3 className="font-semibold mb-2">Pace</h3>
+        <div className="flex gap-2">
+          {[
+            { label: "Fast-Paced", value: "fast" },
+            { label: "Relaxed", value: "relaxed" },
+          ].map((opt) => (
+            <button
+              key={opt.value}
+              className={`${buttonBase} ${
+                pace === opt.value ? "bg-[#E8D5A4] text-[#242b50]" : "bg-white/10 text-[#F4E1C1]"
+              }`}
+              onClick={() => setPace(opt.value)}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Water activities */}
+      <div>
+        <h3 className="font-semibold mb-2">Water Activities</h3>
+        <div className="flex gap-2">
+          {[
+            { label: "Yes", value: "yes" },
+            { label: "No", value: "no" },
+          ].map((opt) => (
+            <button
+              key={opt.value}
+              className={`${buttonBase} ${
+                waterActivities === opt.value ? "bg-[#E8D5A4] text-[#242b50]" : "bg-white/10 text-[#F4E1C1]"
+              }`}
+              onClick={() => setWaterActivities(opt.value)}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Transport */}
+      <div>
+        <h3 className="font-semibold mb-2">Transport</h3>
+        <div className="flex gap-2">
+          {[
+            { label: "Car", value: "car" },
+            { label: "Public", value: "public" },
+          ].map((opt) => (
+            <button
+              key={opt.value}
+              className={`${buttonBase} ${
+                transport === opt.value ? "bg-[#E8D5A4] text-[#242b50]" : "bg-white/10 text-[#F4E1C1]"
+              }`}
+              onClick={() => setTransport(opt.value)}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Start Time */}
+      <div>
+        <h3 className="font-semibold mb-2">Start Time</h3>
+        <div className="flex gap-2">
+          {[
+            "08:00",
+            "09:00",
+            "10:00",
+            "11:00",
+          ].map((time) => (
+            <button
+              key={time}
+              className={`${buttonBase} ${
+                startTime === time ? "bg-[#E8D5A4] text-[#242b50]" : "bg-white/10 text-[#F4E1C1]"
+              }`}
+              onClick={() => setStartTime(time)}
+            >
+              {time}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Additional personalisation (optional) */}
+      <div>
+        <h3 className="font-semibold mb-2">Additional Details <span className="text-xs text-[#888faa]">(optional)</span></h3>
+        <textarea
+          value={extraDetails}
+          onChange={(e) => setExtraDetails(e.target.value)}
+          rows={3}
+          placeholder="e.g. I love historical sites and local tavernas"
+          className="w-full rounded-lg px-4 py-2 bg-white/10 text-[#F4E1C1] placeholder:text-[#888faa] focus:outline-none resize-none"
+        />
+      </div>
+
+      <button
+        disabled={!isReady}
+        onClick={() =>
+          onSubmit({ pace, waterActivities, transport, startTime, extraDetails })
+        }
+        className={`w-full py-3 rounded-full text-sm font-semibold mt-2 transition ${
+          isReady
+            ? "bg-gradient-to-r from-[#E8D5A4] to-[#CAB17B] text-[#242b50] hover:from-[#CAB17B] hover:to-[#E8D5A4]"
+            : "bg-gray-600 text-gray-300 cursor-not-allowed"
+        }`}
+      >
+        Start Planning
+      </button>
     </div>
   );
 }

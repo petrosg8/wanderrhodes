@@ -83,6 +83,18 @@ const LocationCard = ({ location }) => {
           )}
         </div>
 
+        {/* Travel distance/time chip */}
+        {location.travel && (location.travel.durationMinutes || location.travel.distanceMeters) && (
+          <div className="mt-2 text-xs text-[#F4E1C1]/80 flex gap-2 items-center">
+            {location.travel.durationMinutes && (
+              <span>{Math.round(location.travel.durationMinutes)} min</span>
+            )}
+            {location.travel.distanceMeters && (
+              <span>· {(location.travel.distanceMeters / 1000).toFixed(1)} km</span>
+            )}
+          </div>
+        )}
+
         <p className="text-[#F4E1C1]/90 mt-2 text-sm">{location.description}</p>
       </motion.div>
       

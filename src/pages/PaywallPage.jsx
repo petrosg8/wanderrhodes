@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import Logo from '../components/ui/Logo';
 import { createCheckoutSession, simulateSuccessfulPayment } from '../utils/api';
+import { setPaid } from '@/utils/auth';
 import 'slick-carousel/slick/slick.css';
 import 'slick-carousel/slick/slick-theme.css';
 
@@ -157,6 +158,7 @@ function PaywallModal({ isOpen, onClose, sessionId }) {
       // simulate webhook callback
       await new Promise(r => setTimeout(r, 2000));
       simulateSuccessfulPayment(sessionId);
+      setPaid(true);
       setStatus('success');
       setTimeout(onClose, 1500);
     } catch (err) {
@@ -198,7 +200,7 @@ function PaywallModal({ isOpen, onClose, sessionId }) {
           ) : (
             <>
               <div className="bg-gray-100 border border-[#CAB17B] rounded-lg p-4 mb-6">
-                <h3 className="font-medium text-black mb-3">What you’ll get:</h3>
+                <h3 className="font-medium text-black mb-3">What you'll get:</h3>
                 <ul className="space-y-2 text-black">
                   <li className="flex items-start">
                     <CheckCircle className="text-green-500 mr-2 mt-0.5" size={16} />

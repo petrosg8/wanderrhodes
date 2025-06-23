@@ -5,9 +5,44 @@ import { promisify } from 'util';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { getNearbyPlaces, getTravelTime } from './tools/maps.js';
+import Ajv from 'ajv';
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const ajv = new Ajv();
+
+const locationSchema = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    type: { type: "string" },
+    description: { type: "string" },
+    location: {
+      type: "object",
+      properties: {
+        address: { type: "string" },
+        coordinates: {
+          type: "object",
+          properties: {
+            lat: { type: "number" },
+            lng: { type: "number" },
+          },
+          required: ["lat", "lng"],
+        },
+      },
+      required: ["address"],
+    },
+    details: { type: "object" },
+    highlights: { type: "array" },
+    tips: { type: "array" },
+    nearbyAttractions: { type: "array" },
+    bestTimeToVisit: { type: "string" },
+    travel: { type: "object" },
+  },
+  required: ["name", "type", "location"],
+};
+
+const validateLocation = ajv.compile(locationSchema);
 
 export default async function chatHandler(req, res) {
   if (req.method && req.method !== 'POST') {
@@ -240,7 +275,17 @@ Begin by gathering any missing details from the user, then plan a personalized i
     return res.status(500).json({ error: "Failed to get a response from the assistant." });
   }
 
-  const response = finalMessage.content || "";
+  let response = finalMessage.content || "";
+  if (response.trim() === "") {
+    try {
+      const retryCompletion = await openai.chat.completions.create({
+        model: "gpt-4.1-mini",
+        messages: [...messages, { role: 'user', content: 'Please provide the itinerary now.' }],
+      });
+      response = retryCompletion.choices[0].message.content || "";
+    } catch {}
+  }
+
   console.log("Raw AI Response before parsing:\n---\n", response, "\n---");
   const { locations, cleanedText, metadata } = extractStructuredData(response);
   
@@ -423,39 +468,5 @@ function extractStructuredData(response) {
 
 // Helper function to validate location data structure
 function isValidLocationData(data) {
-  // Required fields
-  const requiredFields = ['name', 'type', 'location'];
-  const hasRequiredFields = requiredFields.every(field => 
-    data[field] !== undefined && data[field] !== null
-  );
-
-  if (!hasRequiredFields) return false;
-
-  // Validate location object
-  if (!data.location || typeof data.location !== 'object') return false;
-  if (!data.location.address || typeof data.location.address !== 'string') return false;
-  
-  // Validate coordinates if present
-  if (data.location.coordinates) {
-    const { lat, lng } = data.location.coordinates;
-    if (typeof lat !== 'number' || typeof lng !== 'number') return false;
-  }
-
-  // Validate details if present
-  if (data.details) {
-    if (typeof data.details !== 'object') return false;
-    
-    // Validate rating if present
-    if (data.details.rating !== undefined && 
-        (typeof data.details.rating !== 'number' && typeof data.details.rating !== 'string')) {
-      return false;
-    }
-  }
-
-  // Validate arrays
-  if (data.highlights && !Array.isArray(data.highlights)) return false;
-  if (data.tips && !Array.isArray(data.tips)) return false;
-  if (data.nearbyAttractions && !Array.isArray(data.nearbyAttractions)) return false;
-
-  return true;
+  return validateLocation(data);
 }

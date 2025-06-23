@@ -34,9 +34,7 @@ const LocationCard = ({ location }) => {
         setIsLoading(true);
         setError(null);
         try {
-          const endpoint = import.meta.env.DEV
-            ? 'http://localhost:3001/api/place-photo'
-            : '/api/place-photo';
+          const endpoint = '/api/place-photo'; // proxy handles dev
           const query = encodeURIComponent(`${location.name}, ${location.location.address}`);
           const res = await fetch(`${endpoint}?query=${query}`);
 
@@ -139,7 +137,7 @@ const LocationCard = ({ location }) => {
                     className="w-full h-48 flex items-center justify-center overflow-hidden"
                   >
                     <img
-                      src={placeData.photoUrl}
+                      src={`/api/photo-proxy?url=${encodeURIComponent(placeData.photoUrl)}`}
                       alt={`Photo of ${displayName}`}
                       className="w-auto h-auto max-w-full max-h-full object-contain"
                     />

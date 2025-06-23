@@ -1,25 +1,7 @@
 import { Client } from '@googlemaps/google-maps-services-js';
 import axios from 'axios';
-import { fetchWikimediaPhoto } from './wikimedia.js';
 
 const client = new Client({});
-
-async function fetchUnsplashPhoto(query) {
-  const accessKey = process.env.UNSPLASH_ACCESS_KEY;
-  if (!accessKey) return null;
-  try {
-    const res = await axios.get('https://api.unsplash.com/search/photos', {
-      params: { query, orientation: 'landscape', per_page: 1 },
-      headers: { Authorization: `Client-ID ${accessKey}` },
-    });
-    const photo = res.data.results?.[0];
-    if (!photo) return null;
-    return photo.urls?.regular || photo.urls?.full || null;
-  } catch (err) {
-    console.error('Unsplash error:', err.response?.status || err.code, err.message);
-    return null;
-  }
-}
 
 export async function getPlacePhoto(query) {
   const key = process.env.GOOGLE_MAPS_API_KEY;
@@ -51,7 +33,7 @@ export async function getPlacePhoto(query) {
       photoUrl = `https://maps.googleapis.com/maps/api/place/photo?maxwidth=${maxWidth}&photoreference=${photoReference}&key=${key}`;
     }
 
-    // Fallback: fetch Place Details to see if it contains photos not returned by FindPlaceFromText
+    // Fallback #1: fetch Place Details to see if it contains photos not returned by FindPlaceFromText
     if (!photoUrl) {
       try {
         const details = await client.placeDetails({
@@ -71,17 +53,28 @@ export async function getPlacePhoto(query) {
       }
     }
 
+    // Fallback #2: Text Search (broader search than FindPlaceFromText)
     if (!photoUrl) {
-      console.log(`No Google photo found for query: "${query}"`);
+      try {
+        const textRes = await client.textSearch({
+          params: {
+            query,
+            fields: ['photos'],
+            key,
+          },
+        });
+        const tsPhoto = textRes.data?.results?.[0]?.photos?.[0]?.photo_reference;
+        if (tsPhoto) {
+          photoUrl = `https://maps.googleapis.com/maps/api/place/photo?maxwidth=${maxWidth}&photoreference=${tsPhoto}&key=${key}`;
+        }
+      } catch (e) {
+        console.warn('TextSearch photo fetch failed:', e.response?.status || e.code, e.message);
+      }
     }
 
-    // 1st fallback: Wikimedia (no key, immediate)
+    // As a final fallback return null (frontend can use placeholder)
     if (!photoUrl) {
-      photoUrl = await fetchWikimediaPhoto(query);
-    }
-    // 2nd fallback: Unsplash if Wikimedia had nothing
-    if (!photoUrl) {
-      photoUrl = await fetchUnsplashPhoto(query);
+      return { photoUrl: null, name: candidate.name, address: candidate.formatted_address };
     }
 
     return {
@@ -92,16 +85,6 @@ export async function getPlacePhoto(query) {
 
   } catch (error) {
     console.error(`Google Places API error for query "${query}":`, error.response?.data || error.message);
-    // Wikimedia first
-    const wikiUrl = await fetchWikimediaPhoto(query);
-    if (wikiUrl) {
-      return { photoUrl: wikiUrl };
-    }
-    // Unsplash second
-    const fallbackUrl = await fetchUnsplashPhoto(query);
-    if (fallbackUrl) {
-      return { photoUrl: fallbackUrl };
-    }
     throw error;
   }
 } 

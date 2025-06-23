@@ -4,6 +4,8 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import chatHandler from './chatHandler.js';
 import { getPlacePhoto } from './tools/google.js';
+import Stripe from 'stripe';
+import axios from 'axios';
 
 dotenv.config();
 
@@ -15,6 +17,23 @@ if (!process.env.OPENAI_API_KEY) {
   console.error('❌ Missing OPENAI_API_KEY');
   process.exit(1);
 }
+
+// ----------------- Stripe Setup -----------------
+if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_PRICE_ID) {
+  console.error('❌ Missing STRIPE_SECRET_KEY or STRIPE_PRICE_ID');
+  process.exit(1);
+}
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: '2022-11-15',
+});
+
+const DOMAIN = process.env.DOMAIN || 'http://localhost:5173';
+const PRICE_ID = process.env.STRIPE_PRICE_ID;
+
+console.log('✅ Stripe setup complete');
+console.log('ℹ️ Using Price ID:', PRICE_ID);
+console.log('ℹ️ Return URL:', `${DOMAIN}/return?session_id={CHECKOUT_SESSION_ID}`);
 
 // Mount the same handler as used by the serverless function
 app.post('/api/chat', chatHandler);
@@ -39,7 +58,69 @@ app.get('/api/place-photo', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3001;
+// ----------------- Stripe Endpoints -----------------
+
+// Create Embedded Checkout Session
+app.post('/api/create-checkout-session', async (req, res) => {
+  console.log('🔔 POST /api/create-checkout-session');
+  try {
+    const session = await stripe.checkout.sessions.create({
+      ui_mode: 'embedded',
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price: PRICE_ID,
+          quantity: 1,
+        },
+      ],
+      return_url: `${DOMAIN}/return?session_id={CHECKOUT_SESSION_ID}`,
+    });
+
+    console.log('✅ Created Stripe session:', session.id);
+    res.json({ clientSecret: session.client_secret });
+  } catch (err) {
+    console.error('❌ Error creating session:', err);
+    res.status(500).json({ error: err.message || 'Stripe session failed' });
+  }
+});
+
+// Retrieve Session Status for Return Page
+app.get('/api/session-status', async (req, res) => {
+  const session_id = req.query.session_id;
+  if (!session_id) {
+    return res.status(400).json({ error: 'Missing session_id' });
+  }
+
+  try {
+    const session = await stripe.checkout.sessions.retrieve(session_id);
+    res.json({
+      status: session.status,
+      customer_email: session.customer_details?.email || null,
+    });
+  } catch (err) {
+    console.error('❌ Error fetching session:', err);
+    res.status(500).json({ error: err.message || 'Unable to retrieve session' });
+  }
+});
+
+// Proxy image to avoid API key referrer issues
+app.get('/api/photo-proxy', async (req, res) => {
+  const url = req.query.url;
+  console.log('🖼️ Proxy fetching image:', url);
+  if (!url) return res.status(400).send('Missing url');
+  try {
+    const resp = await axios.get(url, { responseType: 'arraybuffer' });
+    res.set('Content-Type', resp.headers['content-type'] || 'image/jpeg');
+    res.set('Cache-Control', 'public,max-age=86400');
+    res.send(resp.data);
+  } catch (e) {
+    console.error('Photo proxy error:', e.message);
+    res.status(500).send('Failed to fetch image');
+  }
+});
+
+const PORT = process.env.PORT || 4242;
 app.listen(PORT, () => {
   console.log(`🔌 API server listening on http://localhost:${PORT}`);
 });

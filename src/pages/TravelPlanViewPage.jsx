@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import './TravelPlanViewPage.css';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import Logo from '@/components/ui/Logo';
@@ -16,6 +17,12 @@ L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2x,
   iconUrl: markerIcon,
   shadowUrl: markerShadow,
+});
+
+const wrIcon = L.divIcon({
+  className: 'wr-marker',
+  iconSize: [14, 14],
+  iconAnchor: [7, 7],
 });
 
 export default function TravelPlanViewPage() {
@@ -36,7 +43,8 @@ export default function TravelPlanViewPage() {
 
   const coords = plan.locations.map((l) => l.location?.coordinates).filter(Boolean);
 
-  const center = coords.length ? [coords[0].lat, coords[0].lng] : [36.1, 28.0];
+  const center = coords.length ? [coords[0].lat, coords[0].lng] : [36.1, 28.1];
+  const rhodesBounds = [[35.8, 27.6],[36.6, 28.4]];
 
   function FitBounds() {
     const map = useMap();
@@ -75,19 +83,36 @@ export default function TravelPlanViewPage() {
 
       {/* map */}
       <div className="flex-1">
-        <MapContainer center={center} zoom={11} style={{ height: '100%', width: '100%' }}>
+        <MapContainer
+          center={center}
+          zoom={10}
+          minZoom={9}
+          maxBounds={rhodesBounds}
+          style={{ height: '100%', width: '100%' }}
+        >
           <TileLayer
-            attribution='&copy; <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            attribution='&copy; <a href="https://carto.com/attributions">CARTO</a>'
+            url="https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
+            subdomains="abcd"
           />
           {plan.locations.map((loc, idx) => {
             const c = loc.location?.coordinates;
             if (!c) return null;
             return (
-              <Marker key={idx} position={[c.lat, c.lng]}>
-                <Popup>
-                  <strong>{loc.name}</strong>
-                  <br />{loc.description}
+              <Marker key={idx} icon={wrIcon} position={[c.lat, c.lng]}>
+                <Popup className="wr-popup">
+                  <div className="text-sm space-y-1">
+                    <div className="font-semibold text-[#E8D5A4]">{loc.name}</div>
+                    <div className="text-[#F4E1C1]/80">{loc.description?.slice(0, 120) || ''}</div>
+                    <a
+                      href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.name + ' ' + (loc.location?.address || 'Rhodes'))}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-block mt-1 text-xs text-[#E8D5A4] underline"
+                    >
+                      View on Google Maps
+                    </a>
+                  </div>
                 </Popup>
               </Marker>
             );

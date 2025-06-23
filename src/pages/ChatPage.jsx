@@ -3,11 +3,21 @@ import React, { useState, useRef, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import Logo from "../components/ui/Logo";
 import LocationCard from "../components/LocationCard";
-import { Copy, BookMarked } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Copy, BookMarked, ArrowLeft, Send, Sparkles } from "lucide-react";
 import { toast } from "@/components/ui/use-toast";
 import { Toaster } from "@/components/ui/toaster";
 import { isPaid } from "@/utils/auth";
-import { getSavedPlans } from '@/utils/plans';
+import { getSavedPlans, canSaveAnotherPlan } from '@/utils/plans';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogClose,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
 
 const SUGGESTIONS = [
   "Where should I eat tonight in Faliraki?",
@@ -127,10 +137,21 @@ export default function ChatPage() {
   });
   const [userLocation, setUserLocation] = useState(null);
   const [locationDenied, setLocationDenied] = useState(false);
-  const [currentPlan, setCurrentPlan] = useState(null);
+  const [currentPlan, setCurrentPlan] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const raw = sessionStorage.getItem('wr_current_plan');
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  });
   const [planSaved, setPlanSaved] = useState(false);
+  const [showNameDialog, setShowNameDialog] = useState(false);
+  const [planName, setPlanName] = useState('');
 
   const freeRemaining = Math.max(FREE_LIMIT - replyCount, 0);
+
+  // Determine if the overall trial (single free plan) has expired
+  const trialExpired = !isPaid() && !canSaveAnotherPlan();
 
   // auto-scroll
   useEffect(() => {
@@ -158,7 +179,7 @@ export default function ChatPage() {
       );
     }
 
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: 'start' });
   }, [messages, isTyping]);
 
   useEffect(() => {
@@ -191,10 +212,16 @@ export default function ChatPage() {
   const sanitize = (str) => str.replace(/<\/?[^>]+(>|$)/g, "");
 
   const handleSend = async (overrideText) => {
+    if (trialExpired) {
+      navigate("/paywall");
+      return;
+    }
+
     if (replyCount > FREE_LIMIT) {
       navigate("/paywall");
       return;
     }
+
     const now = Date.now();
     if (isTyping || now - lastSent < 2000) return;
 
@@ -217,9 +244,7 @@ export default function ChatPage() {
         role: m.sender === "user" ? "user" : "assistant",
         content: m.message
       }));
-      const endpoint = import.meta.env.DEV
-        ? "http://localhost:3001/api/chat"
-        : "/api/chat";
+      const endpoint = "/api/chat"; // proxy handles dev -> backend
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -249,11 +274,13 @@ export default function ChatPage() {
 
       // If AI returned locations, store as currentPlan
       if (structuredData?.locations?.length > 0) {
-        setCurrentPlan({
+        const planObj = {
           title: text.substring(0, 60),
           locations: structuredData.locations,
           timestamp: Date.now(),
-        });
+        };
+        setCurrentPlan(planObj);
+        try { sessionStorage.setItem('wr_current_plan', JSON.stringify(planObj)); } catch {}
         setPlanSaved(false);
       }
     } catch {
@@ -340,24 +367,18 @@ export default function ChatPage() {
       }}
     >
       {/* HEADER */}
-      <header className="sticky top-0 z-50 bg-[#1a1f3d] py-3 px-4 flex items-center justify-between">
+      <header className="flex items-center justify-between p-4 bg-black/20 backdrop-blur-sm border-b border-white/10 shrink-0">
         {/* left group: back & logo */}
         <div className="flex items-center gap-2">
-          <button
+          <motion.button
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.9 }}
             onClick={() => navigate("/")}
-            className="w-8 h-8 rounded-full hover:bg-white/10 flex items-center justify-center transition"
+            className="p-2 rounded-full hover:bg-white/10"
             title="Back"
           >
-            <svg width={20} height={20} viewBox="0 0 20 20" fill="none">
-              <path
-                d="M13.5 17L7.5 10L13.5 3"
-                stroke="#F4E1C1"
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
+            <ArrowLeft className="text-white/80" />
+          </motion.button>
           <Logo className="h-6 whitespace-nowrap" />
         </div>
 
@@ -382,13 +403,20 @@ export default function ChatPage() {
 
       {/* CHAT */}
       <div
-        className="flex-1 overflow-y-auto px-4 py-2 space-y-2"
+        className="flex-1 overflow-y-auto p-4 space-y-4 pb-32"
         style={{ WebkitOverflowScrolling: "touch", overscrollBehavior: "contain" }}
       >
+        <AnimatePresence>
         {messages.map((m, i) => {
           if (m.type === 'location') {
             return (
-              <div key={i} className={`relative flex justify-start my-1 ${m.blur ? 'blur-sm' : ''}`}>
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  className={`relative flex justify-start my-1 ${m.blur ? 'blur-sm' : ''}`}
+                >
                 <div className="max-w-[75%]">
                   <LocationCard location={m.locationData} />
                 </div>
@@ -400,39 +428,57 @@ export default function ChatPage() {
                     Unlock Full Response
                   </button>
                 )}
-              </div>
+                </motion.div>
             );
           }
           
           return (
+              <motion.div
+                key={i}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+              >
             <ChatBubble
-              key={i}
               sender={m.sender}
               message={m.message}
               time={m.time}
               blur={m.blur}
             />
+              </motion.div>
           );
         })}
+        </AnimatePresence>
         {isTyping && <TypingBubble />}
         <div ref={chatEndRef} />
       </div>
 
       {/* BOTTOM: suggestions + free-pill + input */}
-      <div className="sticky bottom-0 z-50 bg-gradient-to-b from-transparent to-[#242b50] px-4 pt-3 pb-safe">
+      <motion.footer
+        initial={{ y: 100 }}
+        animate={{ y: 0 }}
+        transition={{ type: "spring", stiffness: 100 }}
+        className="p-4 bg-black/30 backdrop-blur-md"
+      >
         {/* suggestions (always visible if you have free prompts) */}
-        {freeRemaining > 0 && (
-          <div className="flex flex-col gap-2 mb-3">
+        {!trialExpired && freeRemaining > 0 && messages.length <= 1 && (
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-3 space-y-2"
+          >
             {SUGGESTIONS.map((s, i) => (
-              <button
+              <motion.button
                 key={i}
+                whileHover={{ scale: 1.02 }}
                 onClick={() => handleSend(s)}
-                className="w-full text-left rounded-full px-4 py-2 bg-white/10 text-[#F4E1C1] font-medium backdrop-blur-md shadow-sm border border-[#F4E1C120] hover:bg-[#E8D5C180] hover:text-[#242b50] transition text-sm"
+                className="w-full text-left rounded-xl px-4 py-3 bg-white/5 border border-white/10 text-[#F4E1C1] font-medium backdrop-blur-sm shadow-sm hover:bg-white/10 transition text-sm flex items-center gap-3"
               >
+                <Sparkles className="w-4 h-4 text-[#E8D5A4] shrink-0" />
                 {s}
-              </button>
+              </motion.button>
             ))}
-          </div>
+          </motion.div>
         )}
 
         {/* save plan button */}
@@ -440,20 +486,10 @@ export default function ChatPage() {
           <div className="flex justify-center mb-2">
             <button
               onClick={() => {
-                import('@/utils/plans').then(({ savePlan, canSaveAnotherPlan }) => {
-                  if (!canSaveAnotherPlan()) {
-                    navigate('/paywall');
-                    return;
-                  }
-                  const name = window.prompt('Name this travel plan:', currentPlan.title || 'My Rhodes Plan');
-                  if (name === null) return; // user cancelled
-                  const ok = savePlan({ ...currentPlan, title: name, chatHistory: messages });
-                  if (ok) {
-                    setPlanSaved(true);
-                    toast({ title: 'Plan saved!' });
-                  } else {
-                    navigate('/paywall');
-                  }
+                import('@/utils/plans').then(({ canSaveAnotherPlan }) => {
+                  if (!canSaveAnotherPlan()) { navigate('/paywall'); return; }
+                  setPlanName(`Travel plan #${Date.now().toString().slice(-5)}`);
+                  setShowNameDialog(true);
                 });
               }}
               className="px-4 py-1 rounded-full text-xs font-semibold bg-[#E8D5A4] text-[#242b50] hover:bg-[#CAB17B] transition"
@@ -465,8 +501,12 @@ export default function ChatPage() {
 
         {/* free-prompts pill */}
         <div className="flex justify-center mb-2">
-          <div className="px-3 py-1 text-xs font-semibold rounded-full border border-[#F4E1C1] bg-white/10 text-[#F4E1C1] whitespace-nowrap">
-            {freeRemaining} free {freeRemaining !== 1 ? "prompts" : "prompt"} left
+          <div className="px-3 py-1 text-xs font-semibold rounded-full border border-white/20 bg-black/20 text-white/70">
+            {trialExpired
+              ? "Free plan used – upgrade for unlimited access"
+              : freeRemaining > 0
+                ? `${freeRemaining} free ${freeRemaining !== 1 ? "prompts" : "prompt"} left`
+                : "Upgrade for unlimited access"}
           </div>
         </div>
 
@@ -478,6 +518,8 @@ export default function ChatPage() {
           }}
           className="flex items-center gap-2 mb-safe"
         >
+          {!trialExpired ? (
+            <>
           <input
             ref={inputRef}
             type="text"
@@ -489,80 +531,145 @@ export default function ChatPage() {
             disabled={isTyping}
             className="flex-1 rounded-full px-4 py-2 bg-[#1a1f3d] text-white placeholder:text-[#888faa] outline-none shadow-inner text-sm"
           />
+            <motion.button
+              type="submit"
+              disabled={isTyping || !input.trim()}
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+              className="w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-br from-[#E8D5A4] to-[#B89E6A] text-[#1a1f3d] disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Send size={20} />
+            </motion.button>
+            </>
+          ) : (
           <button
-            type="submit"
-            disabled={isTyping}
-            className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
-              isTyping
-                ? "bg-gray-600 cursor-not-allowed text-gray-300"
-                : "bg-gradient-to-r from-[#E8D5A4] to-[#CAB17B] text-[#242b50] hover:from-[#CAB17B] hover:to-[#E8D5A4]"
-            }`}
-          >
-            {isTyping ? "Waiting…" : "Send"}
+              type="button"
+              onClick={() => navigate('/paywall')}
+              className="w-full py-3 rounded-full bg-gradient-to-r from-[#E8D5A4] to-[#B89E6A] text-[#1a1f3d] font-semibold hover:from-[#B89E6A] hover:to-[#E8D5A4] transition"
+            >
+              Upgrade for Unlimited Chat
           </button>
+          )}
         </form>
-      </div>
+      </motion.footer>
 
       {/* Toast notifications */}
       <Toaster />
+
+      {/* dialog JSX after footer */}
+      <Dialog open={showNameDialog} onOpenChange={setShowNameDialog}>
+        <DialogContent className="bg-[#1a1f3d] text-[#F4E1C1] border border-white/10">
+          <DialogHeader>
+            <DialogTitle>Save travel plan</DialogTitle>
+          </DialogHeader>
+          <input
+            value={planName}
+            onChange={(e)=>setPlanName(e.target.value)}
+            className="w-full mt-4 p-2 rounded-md bg-black/30 border border-white/20 placeholder:text-white/50 outline-none"
+            placeholder="Travel plan name"
+          />
+          <DialogFooter className="mt-6">
+            <Button
+              onClick={()=>{
+                import('@/utils/plans').then(({ savePlan })=>{
+                  const ok = savePlan({ ...currentPlan, title: planName || currentPlan.title, chatHistory: messages });
+                  if(ok){
+                    setPlanSaved(true);
+                    setShowNameDialog(false);
+                    try { sessionStorage.removeItem('wr_current_plan'); } catch {}
+                    toast({ title: 'Plan saved!' });
+                  } else { navigate('/paywall'); }
+                })
+              }}
+            >Save</Button>
+            <DialogClose asChild>
+              <Button variant="secondary">Cancel</Button>
+            </DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
 function ChatBubble({ sender, message, time, blur }) {
-  const navigate = useNavigate();
   const isUser = sender === "user";
+  const navigate = useNavigate();
+
+  const bubbleVariants = {
+    hidden: { opacity: 0, y: 20 },
+    visible: { opacity: 1, y: 0 },
+    exit: { opacity: 0, y: -20 },
+  };
 
   return (
-    <div className={`relative flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <motion.div
+      variants={bubbleVariants}
+      initial="hidden"
+      animate="visible"
+      exit="exit"
+      className={`relative flex ${isUser ? "justify-end" : "justify-start"}`}
+    >
       <div
-        className={`px-5 py-3 max-w-[75%] break-words filter ${
-          blur && !isUser ? "blur-sm" : ""
+        className={`px-4 py-3 max-w-[80%] break-words rounded-3xl shadow-lg transition-all duration-300 ${
+          blur && !isUser ? "blur-md" : ""
         }`}
         style={{
           background: isUser
-            ? "linear-gradient(135deg, #E8D5A4 30%, #CAB17B 100%)"
-            : "rgba(0,0,0,0.6)",
-          color: isUser ? "#242b50" : "#F4E1C1",
-          borderRadius: "20px",
-          fontSize: "1rem",
+            ? "linear-gradient(135deg, #E8D5A4, #B89E6A)"
+            : "rgba(26, 31, 61, 0.7)",
+          backdropFilter: "blur(10px)",
+          border: isUser ? "none" : "1px solid rgba(244, 225, 193, 0.1)",
+          color: isUser ? "#1a1f3d" : "#F4E1C1",
           fontWeight: 500,
-          boxShadow: isUser
-            ? "0 4px 12px rgba(0,0,0,0.15)"
-            : "0 2px 8px rgba(0,0,0,0.5)",
         }}
       >
-        <p className="whitespace-pre-wrap">{message}</p>
-        <div className="text-[0.7rem] text-[#888faa] text-right mt-1">
+        <p className="text-sm whitespace-pre-wrap">{message}</p>
+        <div className="text-xs text-right mt-2 opacity-60">
           {formatTime(time)}
         </div>
       </div>
       {blur && !isUser && (
+        <div className="absolute inset-0 flex items-center justify-center">
         <button
           onClick={() => navigate("/paywall")}
-          className="absolute inset-0 w-full h-full bg-transparent flex items-center justify-center text-white font-bold text-lg z-10"
+            className="px-4 py-2 text-sm font-semibold rounded-full bg-gradient-to-r from-[#E8D5A4] to-[#CAB17B] text-[#242b50] shadow-xl hover:scale-105 transition-transform"
         >
-          Unlock Full Response
+            Unlock Full Access
         </button>
+        </div>
       )}
-    </div>
+    </motion.div>
   );
 }
 
-function TypingBubble() {
-  return (
-    <div className="flex justify-start">
-      <div className="flex items-center gap-2 px-5 py-3 max-w-[60%] rounded-[20px] bg-[#1a1f3d] text-[#F4E1C1] shadow-inner">
-        <span>Wander Rhodes is typing</span>
-        <div className="flex gap-1">
-          <div className="w-2 h-2 bg-[#E8D5A4] rounded-full animate-ping" />
-          <div className="w-2 h-2 bg-[#E8D5A4] rounded-full animate-ping animation-delay-150" />
-          <div className="w-2 h-2 bg-[#E8D5A4] rounded-full animate-ping animation-delay-300" />
-        </div>
-      </div>
-    </div>
+const TypingBubble = () => (
+  <motion.div
+    initial={{ opacity: 0, y: 10 }}
+    animate={{ opacity: 1, y: 0 }}
+    exit={{ opacity: 0 }}
+    className="flex items-center space-x-1.5"
+  >
+    <div
+      className="h-2 w-2 bg-[#F4E1C1] rounded-full"
+      style={{ animation: "bounce 1s infinite" }}
+    />
+    <div
+      className="h-2 w-2 bg-[#F4E1C1] rounded-full"
+      style={{ animation: "bounce 1s infinite 0.2s" }}
+    />
+    <div
+      className="h-2 w-2 bg-[#F4E1C1] rounded-full"
+      style={{ animation: "bounce 1s infinite 0.4s" }}
+    />
+    <style>{`
+      @keyframes bounce {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-6px); }
+      }
+    `}</style>
+  </motion.div>
   );
-}
 
 // ---------------- PlanConfigurator component ----------------
 function PlanConfigurator({ onSubmit }) {
